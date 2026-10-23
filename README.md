@@ -12,6 +12,8 @@ RICOH SP 6410 を、オプションの PostScript3 カードなしで macOS か�
 
 SP 6410 が標準で理解する言語は RPCS と RPDL です。RPCS 用の Mac ドライバーはなく、リコーの案内では Mac から使うには PostScript3 カード（定価 65,000 円）が要ります。一方の RPDL は、Ghostscript の `rpdl` デバイスで作れます。プリンターも USB の Device ID で `CMD:PJL,RCS,R00` と申告しており、`R00` が RPDL を指します。
 
+解説記事（note）: [6 万 5 千円の PostScript カードを買わずに、RICOH SP 6410 を Mac から使えるようにした話](https://note.com/y_h5977/n/nf778777c1c8d)
+
 PPD の `*cupsFilter` に絶対パスでフィルターを指定してあるので、SIP で守られた `/usr/libexec/cups/filter/` には触りません。raw キューも使いません（macOS 26 では作れません）。
 
 ## 必要なもの
