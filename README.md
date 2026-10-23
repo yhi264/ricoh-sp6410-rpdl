@@ -64,7 +64,7 @@ sudo SP6410_GS=$HOME/opt/gs-rpdl/bin/gs ./install-gui-queue.sh
 
 - 用紙サイズ：A4、A3、A5、B4（JIS）、B5（JIS）、レター、リーガル
 - 解像度：600 dpi（既定）、400 dpi、240 dpi
-- 両面：しない、長辺とじ、短辺とじ（**実機での効き目は未確認**。下記）
+- 両面：しない、長辺とじ、短辺とじ
 
 ## macOS で踏んだ落とし穴
 
@@ -78,10 +78,15 @@ sudo SP6410_GS=$HOME/opt/gs-rpdl/bin/gs ./install-gui-queue.sh
 
 検証の経緯は [docs/verification-log.md](docs/verification-log.md) にあります。
 
+## 実機で確かめたこと
+
+- A4・600 dpi のテキストとラスタ（枠・目盛り・斜線）
+- グレーの階調
+- 両面印刷。RPDL の命令の仕様は公開されておらず、差し込む命令は Ghostscript の `gdevrpdl.c` から組み立てたもの
+
 ## まだ確かめていないこと
 
-- **両面印刷：** 命令を差し込むところまでは確かめましたが、実機で両面に刷れるかは未確認です。RPDL の命令の仕様は公開されておらず、Ghostscript の `gdevrpdl.c` から組み立てています。
-- A3 とグレーの階調の実出力
+- A3 の実出力（データの生成までは確認済み）
 
 ## うまくいかないとき
 

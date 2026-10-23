@@ -222,3 +222,11 @@ OpenUI と CloseUI が 4 対 4、ImageableArea が PaperDimension の内側、
 | Raspberry Pi を RPDL ゲートウェイにして AirPrint 化 | 有効かつエレガント。「Mac 単体で完結させたい」という要件で不採用 |
 | `~/Library/PDF Services/` にスクリプトを置いて印刷ダイアログから呼ぶ | **不可能**。Big Sur 以降 `printtool` が強くサンドボックス化され、シェル・Python・署名済みバイナリ・Automator プラグインすべて実行拒否。Full Disk Access も効かない |
 | Automator のクイックアクション（Finder 右クリック） | 有効。PPD 経路が通ったので不要になった |
+
+---
+
+## 6. その後の実機確認（2026-10）
+
+- **両面印刷：** 注入した `ESC DC2 "61,"` ＋ `ESC DC2 "YA01,n "` で、実機が両面に刷った
+- **グレーの階調：** 実機で出力を確認した
+- **A3：** まだ実際には刷っていない
