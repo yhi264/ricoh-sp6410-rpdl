@@ -1,0 +1,125 @@
+#!/bin/bash
+# sp6410 — PDF/PS を RPDL に変換して SP 6410 に流す（Mac 単体運用）
+#
+#   ./sp6410 資料.pdf                 # A4 / 600dpi / 片面
+#   ./sp6410 資料.pdf a3              # A3
+#   ./sp6410 資料.pdf a4 600 duplex        # 両面（長辺とじ）
+#   ./sp6410 資料.pdf a4 600 duplex-short  # 両面（短辺とじ）
+#   ./sp6410 --convert-only 資料.pdf  # 変換だけして .rpdl を残す
+#
+# 前提:
+#   - rpdl デバイス入りの Ghostscript（gs -h | grep -x rpdl で確認）
+#   - プリンター側: 優先エミュレーション=RPDL / エミュレーション検知=しない
+#
+# 送信方法は SP6410_SEND で選ぶ:
+#   backend  … /usr/libexec/cups/backend/usb を直接叩く（既定。sudo が要る）
+#   usb      … usbsend.py 経由で USB に直接書く（sudo 不要。実機では未検証）
+#   queue    … CUPS の raw キューに lp -o raw（Linux 等、raw キューが作れる環境用）
+#
+# 環境変数:
+#   SP6410_SEND    backend | usb | queue        (既定: backend)
+#   SP6410_URI     usb://RICOH/SP%206410%20JPN?serial=...   (backend 用)
+#   SP6410_QUEUE   raw キュー名                  (既定: SP6410RAW)
+#   SP6410_GS      gs のパス                     (既定: gs)
+#   SP6410_PYTHON  usbsend.py を動かす python    (既定: ~/.venvs/usb/bin/python)
+
+set -euo pipefail
+
+SEND="${SP6410_SEND:-backend}"
+QUEUE="${SP6410_QUEUE:-SP6410RAW}"
+GS="${SP6410_GS:-gs}"
+PYTHON="${SP6410_PYTHON:-$HOME/.venvs/usb/bin/python}"
+USBSEND="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/usbsend.py"
+
+CONVERT_ONLY=0
+if [ "${1:-}" = "--convert-only" ]; then
+  CONVERT_ONLY=1
+  shift
+fi
+
+IN="${1:?usage: sp6410 [--convert-only] <file.pdf> [a4|a3|b4|b5] [600|400|240] [duplex|simplex]}"
+PAPER="${2:-a4}"
+DPI="${3:-600}"
+SIDES="${4:-simplex}"
+
+# --- 事前チェック -----------------------------------------------------------
+if ! command -v "$GS" >/dev/null 2>&1; then
+  echo "error: Ghostscript が見つかりません。brew install ghostscript" >&2
+  exit 1
+fi
+
+# grep -q だと早期終了で tr が SIGPIPE を受け、pipefail に引っかかるので -q は使わない
+if ! "$GS" -h 2>&1 | tr ' ' '\n' | grep -x rpdl >/dev/null; then
+  echo "error: この Ghostscript には rpdl デバイスがありません。" >&2
+  echo "       gs -h | tr ' ' '\\n' | grep -x rpdl  が空です。" >&2
+  echo "       docs/build-ghostscript.md を参照。" >&2
+  exit 1
+fi
+
+OUT="${TMPDIR:-/tmp}/$(basename "${IN%.*}").rpdl"
+
+# --- 変換 -------------------------------------------------------------------
+# -dFIXEDMEDIA が無いと PDF 側の MediaBox が -sPAPERSIZE に勝つ（実測で確認）。
+# -dFitPage は寸法が食い違うときに内容を選択用紙へ収める。
+"$GS" -q -dBATCH -dNOPAUSE -dSAFER \
+  -dFIXEDMEDIA -dFitPage \
+  -sDEVICE=rpdl \
+  -r"$DPI" \
+  -sPAPERSIZE="$PAPER" \
+  -sOutputFile="$OUT" \
+  "$IN"
+
+# --- 両面コマンドの注入 -----------------------------------------------------
+# rpdl デバイスは -dDuplex=true を「無視する」（出力バイト列が 1 バイトも変わらない
+# ことを実測で確認済み）。ソース上は Duplex_set > 0 のときだけコマンドを出す作りだが、
+# その put_params が無いため常に 0 のまま。よって自前で注入する。
+# 挿入位置は最初のラスタコマンド ESC DC2 "G3" の直前 ＝ 初期化ブロックの直後。
+#   ESC DC2 "61,"        両面 ON
+#   ESC DC2 "YA01,2 "    長辺とじ   / "YA01,1 " 短辺とじ(tumble)
+if [ "$SIDES" = "duplex" ] || [ "$SIDES" = "duplex-short" ]; then
+  if [ "$SIDES" = "duplex-short" ]; then BIND=1; else BIND=2; fi
+  perl -0777 -i -pe "BEGIN{\$d=\"\\e\\x1261,\\e\\x12YA01,${BIND} \"} s/(\\e\\x12G3)/\$d\$1/" "$OUT"
+fi
+
+echo "converted: $OUT ($(wc -c < "$OUT" | tr -d ' ') bytes, $PAPER ${DPI}dpi $SIDES)"
+
+if [ "$CONVERT_ONLY" = "1" ]; then
+  exit 0
+fi
+
+# --- 送信 -------------------------------------------------------------------
+case "$SEND" in
+  usb)
+    if [ ! -x "$PYTHON" ]; then
+      echo "error: python が見つかりません: $PYTHON" >&2
+      echo "       python3 -m venv ~/.venvs/usb && ~/.venvs/usb/bin/pip install pyusb" >&2
+      exit 1
+    fi
+    "$PYTHON" "$USBSEND" "$OUT"
+    ;;
+
+  backend)
+    # URI 未指定なら lpinfo から最初の USB プリンターを拾う
+    URI="${SP6410_URI:-$(lpinfo -v 2>/dev/null | awk '/usb:\/\// {print $2; exit}')}"
+    if [ -z "$URI" ]; then
+      echo "error: USB プリンターが見つかりません（lpinfo -v | grep usb で確認）" >&2
+      exit 1
+    fi
+    sudo env DEVICE_URI="$URI" \
+      /usr/libexec/cups/backend/usb 1 "$USER" "$(basename "$IN")" 1 '' "$OUT"
+    ;;
+
+  queue)
+    if ! lpstat -p "$QUEUE" >/dev/null 2>&1; then
+      echo "error: raw キュー '$QUEUE' がありません。" >&2
+      echo "       macOS 26 では raw キューを作れないので SP6410_SEND=usb を使ってください。" >&2
+      exit 1
+    fi
+    lp -d "$QUEUE" -o raw "$OUT"
+    ;;
+
+  *)
+    echo "error: SP6410_SEND は usb / backend / queue のいずれか（今: $SEND）" >&2
+    exit 1
+    ;;
+esac

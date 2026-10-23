@@ -1,0 +1,131 @@
+#!/bin/bash
+# pdftorpdl — CUPS filter: PDF/PS → Ricoh RPDL
+#
+# CUPS フィルターの規約:
+#   argv = job-id user title copies options [filename]
+#   filename が無ければ標準入力から読む。結果は標準出力へ。
+#   ログは stderr に "DEBUG:" 等のプレフィックス付きで出すと error_log に載る。
+#
+# インストール先: /Library/Printers/RICOH-RPDL/filter/pdftorpdl (root:wheel 755)
+# @GS@ / @GSSHARE@ は install-gui-queue.sh が実パスに置換する。
+#
+# 重要: macOS の cupsd はフィルターをサンドボックス下で実行し、
+#       /opt/homebrew 配下の dylib 読み込みを拒否する（実測: "blocked by sandbox"）。
+#       そのため gs とその依存 dylib・Resource は /Library/Printers/ 配下に
+#       同梱したものを使う。
+
+set -uo pipefail
+
+GS="@GS@"
+GSSHARE="@GSSHARE@"
+
+JOBID="${1:-0}"; USERNAME="${2:-}"; TITLE="${3:-}"; COPIES="${4:-1}"; OPTIONS="${5:-}"
+INFILE="${6:-}"
+
+log() { echo "DEBUG: pdftorpdl: $*" >&2; }
+die() { echo "ERROR: pdftorpdl: $*" >&2; exit 1; }
+
+[ -x "$GS" ] || die "Ghostscript が見つかりません: $GS"
+
+export TMPDIR="${TMPDIR:-/private/var/spool/cups/tmp}"
+WORK="$(mktemp -d "$TMPDIR/rpdl.XXXXXX")" || die "作業ディレクトリを作れません"
+trap 'rm -rf "$WORK"' EXIT
+
+# --- 入力を確保 -------------------------------------------------------------
+if [ -n "$INFILE" ]; then
+  SRC="$INFILE"
+else
+  SRC="$WORK/in"
+  cat > "$SRC"
+fi
+[ -s "$SRC" ] || die "入力が空です"
+
+# --- オプション解析 ---------------------------------------------------------
+opt() {
+  # opt <名前> → OPTIONS 文字列から値を取り出す（無ければ空）
+  echo " $OPTIONS " | grep -o "[ ]$1=[^ ]*" | tail -1 | cut -d= -f2- || true
+}
+
+ppd_default() {
+  # PPD の *Default<名前> を拾う（CUPS がオプションを渡してこなかったとき用）
+  [ -n "${PPD:-}" ] && [ -r "${PPD:-}" ] || return 0
+  grep "^\*Default$1:" "$PPD" | head -1 | sed 's/^[^:]*:[[:space:]]*//' | tr -d '\r'
+}
+
+PAGESIZE="$(opt PageSize)";     [ -n "$PAGESIZE" ]   || PAGESIZE="$(ppd_default PageSize)"
+DUPLEX="$(opt Duplex)";         [ -n "$DUPLEX" ]     || DUPLEX="$(ppd_default Duplex)"
+RESOLUTION="$(opt Resolution)"; [ -n "$RESOLUTION" ] || RESOLUTION="$(ppd_default Resolution)"
+
+# PPD の用紙名 → Ghostscript の PAPERSIZE 名
+#   B4/B5 は JIS。gs の "b4" は ISO B4 (709x1001pt) で RPDL の期待する
+#   JIS B4 (729x1032pt) と違うため、必ず jisb4/jisb5 を使う。
+case "$PAGESIZE" in
+  A3)      PAPER=a3 ;;
+  A4|"")   PAPER=a4 ;;
+  A5)      PAPER=a5 ;;
+  B4)      PAPER=jisb4 ;;
+  B5)      PAPER=jisb5 ;;
+  Letter)  PAPER=letter ;;
+  Legal)   PAPER=legal ;;
+  *)       log "未知の PageSize '$PAGESIZE' → a4 で処理"; PAPER=a4 ;;
+esac
+
+case "$RESOLUTION" in
+  240dpi) DPI=240 ;;
+  400dpi) DPI=400 ;;
+  *)      DPI=600 ;;
+esac
+
+log "job=$JOBID user=$USERNAME copies=$COPIES paper=$PAPER dpi=$DPI duplex=$DUPLEX"
+
+# --- Ghostscript のリソース探索パス -----------------------------------------
+# 同梱した gs は元の prefix を焼き込んでいるので、引っ越し先を明示的に教える。
+GS_RES=()
+if [ -n "$GSSHARE" ] && [ -d "$GSSHARE" ]; then
+  [ -d "$GSSHARE/Resource/Init" ] && GS_RES+=(-I "$GSSHARE/Resource/Init")
+  [ -d "$GSSHARE/lib" ]           && GS_RES+=(-I "$GSSHARE/lib")
+  [ -d "$GSSHARE/Resource/Font" ] && GS_RES+=(-I "$GSSHARE/Resource/Font")
+  [ -d "$GSSHARE/iccprofiles" ]   && GS_RES+=(-sICCProfilesDir="$GSSHARE/iccprofiles/")
+fi
+
+# --- 変換 -------------------------------------------------------------------
+OUT="$WORK/out.rpdl"
+# -dFIXEDMEDIA が無いと、PDF 入力では PDF 側の MediaBox が -sPAPERSIZE に勝ってしまう
+# （実測: B4 を指定しても A4 の用紙コマンドが出た）。-dFitPage は寸法が食い違うときに
+# 内容を選択用紙に合わせて縮小する。
+if ! "$GS" -q -dBATCH -dNOPAUSE -dSAFER \
+      "${GS_RES[@]}" \
+      -dFIXEDMEDIA -dFitPage \
+      -sDEVICE=rpdl -r"$DPI" -sPAPERSIZE="$PAPER" \
+      -sOutputFile="$OUT" "$SRC" 2>>"$WORK/gs.err"; then
+  log "Ghostscript failed:"
+  sed 's/^/ERROR: gs: /' "$WORK/gs.err" >&2
+  die "変換に失敗しました"
+fi
+[ -s "$OUT" ] || die "変換結果が空です"
+
+# --- 両面コマンドの注入 -----------------------------------------------------
+# rpdl デバイスは -dDuplex を無視するため、最初のラスタコマンド ESC DC2 "G3" の
+# 直前に自前で挿入する。DuplexNoTumble=長辺とじ / DuplexTumble=短辺とじ。
+case "$DUPLEX" in
+  DuplexNoTumble) BIND=2 ;;
+  DuplexTumble)   BIND=1 ;;
+  *)              BIND="" ;;
+esac
+if [ -n "$BIND" ]; then
+  perl -0777 -i -pe "BEGIN{\$d=\"\\e\\x1261,\\e\\x12YA01,${BIND} \"} s/(\\e\\x12G3)/\$d\$1/" "$OUT" \
+    || log "両面コマンドの注入に失敗（片面で続行）"
+fi
+
+# --- 出力（部数は自前で複製: PPD は cupsManualCopies True）------------------
+N="${COPIES:-1}"
+case "$N" in ''|*[!0-9]*) N=1 ;; esac
+[ "$N" -lt 1 ] && N=1
+
+i=1
+while [ "$i" -le "$N" ]; do
+  cat "$OUT" || die "出力に失敗しました"
+  i=$((i + 1))
+done
+
+log "done ($(wc -c < "$OUT" | tr -d ' ') bytes x $N)"

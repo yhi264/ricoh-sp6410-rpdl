@@ -1,0 +1,6 @@
+.DS_Store
+*.prn
+*.tar.xz
+*.tar.gz
+*.rpdl
+!tests/smoke-test.rpdl

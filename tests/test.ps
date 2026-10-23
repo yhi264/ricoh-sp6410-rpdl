@@ -1,0 +1,32 @@
+%!PS-Adobe-3.0
+%%BoundingBox: 0 0 595 842
+/Helvetica findfont 28 scalefont setfont
+72 750 moveto (RPDL TEST PAGE) show
+/Helvetica findfont 14 scalefont setfont
+72 715 moveto (Ghostscript -sDEVICE=rpdl / 600dpi / A4 portrait) show
+72 695 moveto (RICOH SP 6410 connectivity check) show
+% frame 10mm inside the page
+28 28 moveto 539 0 rlineto 0 786 rlineto -539 0 rlineto closepath
+2 setlinewidth stroke
+% ruler marks every 10mm along bottom and left
+0.5 setlinewidth
+0 10 20 {
+  /i exch def
+  i 28.35 mul 28.35 add 28.35 moveto 0 14 rlineto stroke
+} for
+0 10 30 {
+  /j exch def
+  28.35 j 28.35 mul 28.35 add moveto 14 0 rlineto stroke
+} for
+% gray ramp
+/Helvetica findfont 10 scalefont setfont
+72 640 moveto (Gray ramp 0-100%) show
+0 1 10 {
+  /k exch def
+  k 10 div setgray
+  72 k 40 mul add 600 40 30 rectfill
+} for
+0 setgray
+% diagonal
+72 200 moveto 450 400 lineto stroke
+showpage
